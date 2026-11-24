@@ -13,6 +13,18 @@ import { getAdvancedOllamaSettings } from "@/services/app"
 
 let firefoxRewriteListener: ((details: any) => any) | null = null
 
+// One DNR rule per target origin. Upstream used a single shared rule id (1),
+// so a background Ollama check (getOllamaURL) could repoint the rule between a
+// provider's urlRewriteRuntime() call and its fetch, sending the real
+// chrome-extension:// Origin. Ids >= 2; id 1 is the legacy shared rule.
+const ruleIdForOrigin = (origin: string) => {
+  let h = 0
+  for (let i = 0; i < origin.length; i++) {
+    h = (h * 31 + origin.charCodeAt(i)) >>> 0
+  }
+  return (h % 1_000_000_000) + 2
+}
+
 const removeFirefoxRewriteListener = () => {
   if (firefoxRewriteListener) {
     try {
@@ -38,8 +50,10 @@ export const urlRewriteRuntime = async function (
         import.meta.env.BROWSER === "edge"
       ) {
         try {
+          const existing =
+            await browser.declarativeNetRequest.getDynamicRules()
           await browser.declarativeNetRequest.updateDynamicRules({
-            removeRuleIds: [1],
+            removeRuleIds: existing.map((r) => r.id),
             addRules: []
           })
         } catch (e) {}
@@ -63,7 +77,7 @@ export const urlRewriteRuntime = async function (
       }
       const rules = [
         {
-          id: 1,
+          id: ruleIdForOrigin(url.origin),
           priority: 1,
           condition: {
             // anchor to the exact scheme://host:port — requestDomains would
@@ -85,7 +99,7 @@ export const urlRewriteRuntime = async function (
         }
       ]
       await browser.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: rules.map((r) => r.id),
+        removeRuleIds: [1, ...rules.map((r) => r.id)],
         // @ts-ignore
         addRules: rules
       })
