@@ -5,7 +5,7 @@ import { isTwitterProfile, isTwitterTimeline, parseTweetProfile, parseTwitterTim
 import { isWikipedia, parseWikipedia } from "@/parser/wiki"
 import { getMaxContextSize } from "@/services/kb"
 import { YtTranscript } from "yt-transcript"
-import { processPDFFromURL } from "./pdf"
+import { getPdfContent } from "./pdf-extract"
 
 const getTranscript = async (url: string) => {
     const ytTranscript = new YtTranscript({ url })
@@ -74,7 +74,7 @@ export const getTabContents = async (documents: ChatDocuments) => {
                     extractedContent = formatTranscriptText(transcript)
                 }
             } else if (isWikipedia(doc.url)) {
-                extractedContent = parseWikipedia(content)
+                extractedContent = parseWikipedia(content.html)
             } else if (isAmazonURL(doc.url)) {
                 extractedContent = parseAmazonWebsite(content.html)
             } else if (isTwitterProfile(doc.url)) {
@@ -82,7 +82,13 @@ export const getTabContents = async (documents: ChatDocuments) => {
             } else if (isTwitterTimeline(doc.url)) {
                 extractedContent = parseTwitterTimeline(content.html)
             } else if (content.isPDF) {
-                extractedContent = await processPDFFromURL(doc.url)
+                const res = await getPdfContent(doc.url)
+                extractedContent =
+                    res.kind === "html"
+                        ? res.content
+                        : res.kind === "pdf"
+                          ? res.pages.map((p) => p.content).join("\n\n")
+                          : `[Could not read this PDF: ${res.reason}]`
             } else {
                 extractedContent = defaultExtractContent(content.html)
             }

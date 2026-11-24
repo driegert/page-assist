@@ -154,6 +154,19 @@
       "maxWebsiteContext": {
         "label": "Maximum Content Size for Full Context Mode",
         "placeholder": "Content size (default 4028)"
+      },
+      "paperLibrary": {
+        "label": "Paper library URL",
+        "help": "If a PDF you open is byte-identical to one in your converted paper library, its existing Markdown is used. Only the PDF's SHA-256 hash is sent."
+      },
+      "docproc": {
+        "label": "Convert PDFs with docproc",
+        "url": "docproc URL",
+        "mode": "docproc mode",
+        "reading": "Reading (text + equations, fast)",
+        "full": "Full (adds tables, slower)",
+        "invalidUrl": "Use https://, or http:// only for a local or private-network host. Not saved.",
+        "warning": "Every PDF you chat with, including ones downloaded with your login, is uploaded to this server and stays there. Only use a server you control."
       }
     },
     "webSearch": {

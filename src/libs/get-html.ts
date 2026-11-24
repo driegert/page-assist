@@ -1,5 +1,5 @@
 import { defaultExtractContent } from "@/parser/default"
-import { getPdf } from "./pdf"
+import { getPdfContent } from "./pdf-extract"
 import {
   isTweet,
   isTwitterTimeline,
@@ -16,10 +16,56 @@ const _getHtml = () => {
     return { url, content: "", type: "pdf" }
   }
 
+  // Publisher wrapper pages (IEEE stamp.jsp etc.): an HTML page whose only
+  // real content is an iframe/embed of the PDF. Hand back the PDF's URL.
+  // Runs inside the page via executeScript, so it must stay self-contained.
+  // Only same-origin frames qualify (getDataFromCurrentTab re-checks); a
+  // cross-origin one is reported so the user can be told to open it directly.
+  let crossOriginPdfHost: string | undefined
+  try {
+    const frames = Array.from(
+      document.querySelectorAll("iframe[src], embed[src], object[data]")
+    ) as any[]
+    const viewport = window.innerWidth * window.innerHeight
+    if (frames.length > 0 && viewport > 0) {
+      const bodyText = (document.body?.innerText || "").trim()
+      if (bodyText.length < 1000) {
+        for (const el of frames) {
+          let u: URL
+          try {
+            u = new URL(el.src || el.data || "", window.location.href)
+          } catch (e) {
+            continue
+          }
+          if (u.protocol !== "http:" && u.protocol !== "https:") continue
+          const type = (el.getAttribute("type") || "").toLowerCase()
+          // Match on the path only: `viewer.html?file=x.pdf` is an HTML viewer.
+          const pdfish =
+            type === "application/pdf" ||
+            /\.pdf$/i.test(u.pathname) ||
+            /getpdf|stamppdf|pdfft|\/pdf(\/|$)/i.test(u.pathname)
+          const rect = el.getBoundingClientRect()
+          if (!pdfish || rect.width * rect.height < viewport * 0.4) continue
+          if (u.origin !== window.location.origin) {
+            crossOriginPdfHost = crossOriginPdfHost || u.host
+            continue
+          }
+          return {
+            url,
+            content: document.documentElement.outerHTML,
+            type: "pdf",
+            pdfUrl: u.href
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
   return {
     content: document.documentElement.outerHTML,
     url,
-    type: "html"
+    type: "html",
+    crossOriginPdfHost
   }
 }
 
@@ -362,45 +408,73 @@ export const getDataFromCurrentTab = async () => {
     url: string
     content: string
     type: string
+    pdfUrl?: string
+    crossOriginPdfHost?: string
   }>
 
-  const { content, type, url } = await result
+  const { content, type, url, pdfUrl, crossOriginPdfHost } = await result
+
+  const htmlResult = (note?: string) => {
+    const text = defaultExtractContent(content, url)
+    return {
+      url,
+      content: note ? `${note}\n\n${text}` : text,
+      type: "html",
+      pdf: [],
+      html: content
+    }
+  }
+
+  // The embed URL is page-controlled and the PDF fetch carries the user's
+  // cookies. Follow it only when same-origin with the tab (getPdfContent also
+  // refuses redirects for it), so a hostile page can't aim us elsewhere.
+  let trustedPdfUrl: string | undefined
+  if (pdfUrl) {
+    try {
+      if (new URL(pdfUrl).origin === new URL(url).origin) trustedPdfUrl = pdfUrl
+    } catch (e) {}
+    if (!trustedPdfUrl) {
+      console.warn("[getDataFromCurrentTab] ignoring cross-origin PDF embed")
+      return htmlResult()
+    }
+  }
 
   if (type === "pdf") {
-    const res = await fetch(url)
-    const data = await res.arrayBuffer()
-    let pdfHtml: {
-      content: string
-      page: number
-    }[] = []
-    const pdf = await getPdf(data)
-
-    for (let i = 1; i <= pdf.numPages; i += 1) {
-      const page = await pdf.getPage(i)
-      const content = await page.getTextContent()
-
-      if (content?.items.length === 0) {
-        continue
-      }
-
-      const text = content?.items
-        .map((item: any) => item.str)
-        .join("\n")
-        .replace(/\x00/g, "")
-        .trim()
-      pdfHtml.push({
-        content: text,
-        page: i
-      })
+    const res = await getPdfContent(trustedPdfUrl || url, {
+      fromEmbed: !!trustedPdfUrl
+    })
+    if (res.kind === "html") {
+      return { url, content: res.content, type: "html", pdf: [], html: res.html }
     }
-
+    if (res.kind === "pdf") {
+      return { url, content: "", pdf: res.pages, type: "pdf" }
+    }
+    // Download failed. For a wrapper page, use the wrapper's own text
+    // (e.g. the "PDF" was really an HTML viewer); for a PDF tab, tell the model.
+    if (trustedPdfUrl) {
+      return htmlResult(
+        `[Page Assist: this page embeds a PDF that could not be downloaded (${res.reason}). Open the PDF directly in the tab to chat with it.]`
+      )
+    }
     return {
       url,
       content: "",
-      pdf: pdfHtml,
-      type: "pdf"
+      type: "pdf",
+      pdf: [
+        {
+          page: 1,
+          content: `[Page Assist could not read this PDF (${res.reason}). If the site needs a login, make sure you are logged in and try again.]`
+        }
+      ]
     }
   }
+
+  if (crossOriginPdfHost) {
+    return htmlResult(
+      `[Page Assist: this page embeds a PDF from another site (${crossOriginPdfHost}). Open the PDF directly in the tab to chat with it.]`
+    )
+  }
+
   if (isTwitterTimeline(url)) {
     const data = parseTwitterTimeline(content)
     return {
